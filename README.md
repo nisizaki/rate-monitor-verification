@@ -10,8 +10,10 @@ are mathematical abstractions; they do not verify the TypeScript implementation.
   This equivalence uses the operational bucket semantics as its specification;
   an independent arrival-curve specification remains future work.
 * `Bot_Order.thy` models a single execution's abstract stages and proves that
-  a trace from `Prepare` containing `MarkOK` also contains `ReplyOK`. A stronger
-  temporal ordering theorem and the relationship to TypeScript remain open.
+  `ReplyOK` precedes `MarkOK` in a trace from `Prepare`.
+* `Bot_Rate.thy` synchronizes bot actions with bucket events and proves an
+  upper bound on `SendRequest` events in any finite product-model run.
+  See `docs/implementation-correspondence.md` for implementation mapping.
 
 Time and refill amounts are natural numbers. The monitored send denotes an
 abstract fetch invocation, not a network arrival. Parallel execution IDs,

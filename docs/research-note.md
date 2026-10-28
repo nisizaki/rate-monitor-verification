@@ -1,0 +1,154 @@
+# 目的と対象
+
+DeepLbot3のDeepL呼び出しを事例に、送信制御と実行時観測を研究する。ここで送信はアプリケーションによる
+`fetch`
+呼び出しを表し、DeepLへの到着時刻ではない。バケットのパラメータは研究者が定める方針であり、DeepL内部の制限の推定ではない。流量制約はネットワーク計算
+(Boudec と Thiran 2001; Boudec 2018)、実行時の観測は実行時検証 (Bartocci
+ほか 2018) に関連する。
+
+以下は有限実行を対象とする数学的説明である。各理論はIsabelle-checkerの
+`strict=true` で検査済みだが、TypeScript実装との対応は未証明である。
+
+# トークンバケット
+
+容量 $`B`$、補充率 $`r`$、残量 $`b`$、時間増分 $`d`$
+は自然数とする。$`d=0`$ も許す。イベントは時間経過
+$`\mathrm{Tick}(d)`$、送信 $`\mathrm{Send}`$、その他 $`\mathrm{Other}`$
+とし、状態遷移を以下で定める。
+
+``` math
+\begin{aligned}
+b &\xrightarrow{\mathrm{Tick}(d)} \min(B,b+rd),\\
+b &\xrightarrow{\mathrm{Send}} b-1 && (b>0),\\
+b &\xrightarrow{\mathrm{Other}} b.
+\end{aligned}
+```
+
+有限列 $`E`$ の送信回数を $`S(E)`$、時間経過の和を $`T(E)`$
+とする。$`b\xrightarrow{E}b'`$
+は列の各イベントが順に遷移可能であることを意味する。これは
+`Rate_Bucket.thy` の `step`、`run`、`sends`、`elapsed` に対応する。
+
+**補題1（残量上限）**　$`b\le B`$ かつ $`b\xrightarrow{E}b'`$ ならば
+$`b'\le B`$。
+
+*証明.* 実行列について帰納法を用いる。空列では明らか。時間経過では
+$`\min`$ が $`B`$
+を超えず、送信では残量が減り、その他のイベントでは変わらない。よって各遷移で上限が保存される。□
+
+**補題2（資源収支）**　$`b\xrightarrow{E}b'`$ ならば
+$`S(E)+b'\le b+rT(E)`$。
+
+*証明.*
+列の先頭からの帰納法。空列では等号。送信では送信回数が1増え残量が1減るので左辺は変わらない。時間経過
+$`d`$ による残量の増加は高々 $`rd`$
+である。その他のイベントはどちらも変えない。したがって不等式は保存される。□
+
+**定理1（送信量上限）**　$`b\le B`$ かつ $`b\xrightarrow{E}b'`$ ならば
+$`S(E)\le B+rT(E)`$。
+
+*証明.* 補題2と $`b'\ge0`$ より $`S(E)\le b+rT(E)`$。仮定 $`b\le B`$
+を適用する。□
+
+任意の有限実行区間に適用できる。複数実行のイベントが一つの共有バケットの列に直列化できれば、この定理を使えるが、直列化と共有状態の実装保証はまだ含まれない。
+
+# 実行可能モニタ
+
+モニタ状態は $`\mathrm{Some}(b)`$ または $`\mathrm{None}`$
+とする。前者ではバケットと同じ補充・消費を行い、残量0で送信を観測すると後者へ移る。後者は以後維持される。列
+$`E`$ の処理結果を $`M(B,r,b,E)`$ とする。実装は `Rate_Monitor.thy`
+にある。
+
+**定理2（遷移関係との等価性）**　$`b\xrightarrow{E}b'`$ と
+$`M(B,r,b,E)=\mathrm{Some}(b')`$ は同値。
+
+*証明.*
+単一イベントについて、遷移が存在することとモニタ更新が同じ残量を返すことは、3種類のイベントの定義から同値である。列の長さで帰納する。空列は自明。先頭イベントに単一イベントの同値性、残りの列に帰納法の仮定を用いる。途中で
+$`\mathrm{None}`$ になると復帰しないので、成功結果にはならない。□
+
+**定理3（受理列の送信量）**　$`b\le B`$ かつ
+$`M(B,r,b,E)=\mathrm{Some}(b')`$ ならば $`S(E)\le B+rT(E)`$。
+
+*証明.* 定理2でバケットの実行関係を得て、定理1を適用する。□
+
+ここで証明した等価性は、同じ操作的バケット意味論との対応である。独立した到着曲線仕様との同値性や、イベントの欠落がない観測はまだ証明していない。
+
+# ボットの処理段階
+
+単一実行の段階を準備、送信可能、要求中、応答検査、返信、利用記録、完了リアクション、終了とする。成功経路はこの順序で進み、失敗遷移は任意の段階から終了する。返信成功を
+$`\mathrm{ReplyOK}`$、完了リアクション成功を $`\mathrm{MarkOK}`$
+と表す。これは実装のすべての分岐を表すものではない。理論は
+`Bot_Order.thy` にある。
+
+**補題3**　任意の段階 $`p`$
+からの実行が完了リアクション段階へ到達するか、実行列に
+$`\mathrm{MarkOK}`$ を含むなら、$`p`$
+は利用記録または完了リアクション段階であるか、実行列に
+$`\mathrm{ReplyOK}`$ が含まれる。
+
+*証明.*
+実行列について帰納する。空列の場合、結論は開始段階の条件から従う。先頭遷移を場合分けすると、利用記録に入る唯一の成功遷移は返信成功、完了リアクションに入る唯一の遷移は利用記録終了であり、他の遷移は帰納法の仮定を保存する。失敗遷移は終了段階に進む。よって各場合で成立する。□
+
+**定理4（返信成功の存在）**　準備状態からの有限実行列に
+$`\mathrm{MarkOK}`$ が含まれるならば、同じ列に $`\mathrm{ReplyOK}`$
+が含まれる。
+
+*証明.*
+補題3を適用する。開始段階は準備なので、利用記録・完了リアクションであるという例外は成立しない。□
+
+現在のIsabelle定理はイベントの存在を示す。列中の厳密な先行順序を直接述べる定理は未実装である。
+
+# 限界と今後の作業
+
+実行IDと共有バケットの並行合成、再試行・期限、計装の消去、観測の完全性、許可取得と呼び出しの時間差、TypeScriptとの精密化関係は未形式化である。線形化可能性
+(Herlihy と Wing 1990) と時間オートマトンの検証 (Wimmer と Lammich 2018)
+は今後の検討に関連する。Slack環境の実測は仮定の妥当性を評価するが、観測された最大遅延は全実行の証明済み上限ではない。
+
+# 参考文献
+
+<div id="refs" class="references csl-bib-body hanging-indent"
+entry-spacing="0">
+
+<div id="ref-runtime" class="csl-entry">
+
+Bartocci, Ezio, Ylies Falcone, Adrian Francalanza, と Giles Reger. 2018.
+「Introduction to Runtime Verification」. *Lectures on Runtime
+Verification*. Springer. <https://doi.org/10.1007/978-3-319-75632-5_1>.
+
+</div>
+
+<div id="ref-regulators" class="csl-entry">
+
+Boudec, Jean-Yves Le. 2018. 「A Theory of Traffic Regulators for
+Deterministic Networks With Application to Interleaved Regulators」.
+*IEEE/ACM Transactions on Networking* 26 (6): 2721–33.
+<https://doi.org/10.1109/TNET.2018.2875191>.
+
+</div>
+
+<div id="ref-network" class="csl-entry">
+
+Boudec, Jean-Yves Le, と Patrick Thiran. 2001. *Network Calculus: A
+Theory of Deterministic Queuing Systems for the Internet*. Springer.
+<https://doi.org/10.1007/3-540-45318-0>.
+
+</div>
+
+<div id="ref-linear" class="csl-entry">
+
+Herlihy, Maurice, と Jeannette M. Wing. 1990. 「Linearizability: A
+Correctness Condition for Concurrent Objects」. *ACM Transactions on
+Programming Languages and Systems* 12 (3): 463–92.
+<https://doi.org/10.1145/78969.78972>.
+
+</div>
+
+<div id="ref-timed" class="csl-entry">
+
+Wimmer, Simon, と Peter Lammich. 2018. 「Verified Model Checking of
+Timed Automata」. *TACAS*, 61–78. Springer.
+<https://doi.org/10.1007/978-3-319-89960-2_4>.
+
+</div>
+
+</div>

@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-28",
+  "deno": "2.9.8",
+  "baseline": "b4eb35ba464ebde9e4fad89c387c68653cc76dac",
+  "patch_apply_check": "passed",
+  "patched_source_hashes": "matched",
+  "commands": [
+    {
+      "command": "deno fmt --check",
+      "result": "passed"
+    },
+    {
+      "command": "deno lint",
+      "result": "passed"
+    },
+    {
+      "command": "deno test --cached-only --deny-net --deny-env --deny-run --deny-write --allow-read --permit-no-files",
+      "passed": 165,
+      "failed": 0
+    },
+    {
+      "command": "python3 -m unittest -v test_safe_log_filter.py",
+      "passed": 7,
+      "failed": 0
+    }
+  ],
+  "network": "Deno test network access denied; cached dependencies; Python collector fixtures only",
+  "live_evaluation": "not_run",
+  "script_usage_api": "not_run_by_agent",
+  "initial_relocated_test_fmt": "failed; corrected import formatting before final validation",
+  "whitespace_check": "Non-patch staged files pass git diff --check. Patch files retain required blank context lines (single space), which outer diff --check flags; applied source passes Deno fmt. Initial historical patch bytes preserved."
+}

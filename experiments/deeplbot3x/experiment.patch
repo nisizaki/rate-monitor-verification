@@ -1,8 +1,6 @@
-diff --git a/functions/translate_reaction.ts b/functions/translate_reaction.ts
-index 99b3279..dd9ce43 100644
 --- a/functions/translate_reaction.ts
 +++ b/functions/translate_reaction.ts
-@@ -1,6 +1,11 @@
+@@ -1,6 +1,17 @@
  import { DefineFunction, Schema, SlackFunction } from "deno-slack-sdk/mod.ts";
  import { translateJapaneseToEnglish } from "../lib/deepl_client.ts";
  import { MissingDeepLAuthKeyError } from "../lib/errors.ts";
@@ -11,20 +9,27 @@ index 99b3279..dd9ce43 100644
 +  experimentMode,
 +  observedFetch,
 +} from "../lib/experiment_observer.ts";
++import {
++  experimentTrace,
++  observationElapsed,
++  observationTime,
++  translationProbe,
++} from "../lib/experiment_telemetry.ts";
  import { createSlackGateway } from "../lib/slack_gateway.ts";
  import { handleTranslateReaction } from "../lib/translate_reaction_service.ts";
  import { resolveTriggerEmojiName } from "../lib/trigger_emoji.ts";
-@@ -11,6 +16,9 @@ export interface SlackFunctionEnv {
+@@ -11,6 +22,10 @@
    DEEPL_GLOSSARY_ID?: string;
    DEEPL_API_URL?: string;
    DEEPL_TRIGGER_EMOJI?: string;
 +  EXPERIMENT_CHANNEL_ID?: string;
 +  EXPERIMENT_WORKSPACE_ID?: string;
 +  EXPERIMENT_MODE?: string;
++  EXPERIMENT_TRIAL_ID?: string;
  }
  
  export type SlackFunctionTranslator = typeof translateJapaneseToEnglish;
-@@ -44,6 +52,12 @@ export const TranslateReactionFunctionDefinition = DefineFunction({
+@@ -44,6 +59,24 @@
  export default SlackFunction(
    TranslateReactionFunctionDefinition,
    async ({ inputs, client, env }) => {
@@ -32,37 +37,65 @@ index 99b3279..dd9ce43 100644
 +    if (!experimentAllowed(inputs.workspace_id, inputs.channel_id, env)) {
 +      return { outputs: { skipped: true, result_code: "experiment_filtered" } };
 +    }
-+    const start = performance.now();
++    const start = observationTime();
 +    const mode = experimentMode(env.EXPERIMENT_MODE)!;
++    const trace = experimentTrace(
++      mode,
++      env.EXPERIMENT_TRIAL_ID,
++      (entry) => console.log(JSON.stringify(entry)),
++    );
++    trace({
++      kind: "experiment_start",
++      bucket_capacity: 1,
++      refill_rate: 0,
++      retries_configured: 0,
++      fetch_observation: mode === "baseline" ? "absent" : "enabled",
++    });
      const triggerEmoji = createTriggerEmojiName(env);
      const result = await handleTranslateReaction({
        reaction: inputs.reaction,
-@@ -59,6 +73,17 @@ export default SlackFunction(
+@@ -54,10 +87,24 @@
+       eventTs: inputs.event_ts,
+     }, {
+       slack: createSlackGateway(client),
+-      translateText: createDeepLTranslator(env),
++      translateText: translationProbe(
++        createDeepLTranslator(env, translateJapaneseToEnglish, trace),
++        trace,
++      ),
+       triggerEmoji,
        log: logSafe,
      });
- 
++
 +    try {
-+      console.log(JSON.stringify({
++      trace({
 +        kind: "experiment_result",
 +        mode,
-+        elapsed_ms: performance.now() - start,
++        elapsed_ms: observationElapsed(start, observationTime()),
 +        result_code: result.code,
-+      }));
++      });
 +    } catch {
 +      // The experimental observer is passive.
 +    }
-+
+ 
      return {
        outputs: {
-         skipped: result.code !== "translated" &&
-@@ -79,11 +104,18 @@ export function createDeepLTranslator(
+@@ -73,17 +120,26 @@
+ export function createDeepLTranslator(
+   env: SlackFunctionEnv,
+   translator: SlackFunctionTranslator = translateJapaneseToEnglish,
++  trace?: (entry: Record<string, unknown>) => void,
+ ) {
+   return (text: string) => {
+     if (!env.DEEPL_AUTH_KEY) {
        throw new MissingDeepLAuthKeyError();
      }
  
 +    const mode = experimentMode(env.EXPERIMENT_MODE);
 +    const fetchFn = mode === "record" || mode === "monitor"
 +      ? observedFetch(fetch, mode, () => performance.now(), (entry) => {
-+        console.log(JSON.stringify(entry));
++        if (trace) trace(entry);
++        else console.log(JSON.stringify(entry));
 +      })
 +      : undefined;
      return translator({
@@ -74,19 +107,46 @@ index 99b3279..dd9ce43 100644
      });
    };
  }
-@@ -93,5 +125,5 @@ export function createTriggerEmojiName(env: SlackFunctionEnv): string {
+@@ -92,6 +148,10 @@
+   return resolveTriggerEmojiName(env.DEEPL_TRIGGER_EMOJI);
  }
  
- function logSafe(fields: SafeLogFields): void {
+-function logSafe(fields: SafeLogFields): void {
 -  console.log(JSON.stringify(fields));
-+  console.log(JSON.stringify({ code: fields.code, stage: fields.stage }));
++export function logSafe(fields: SafeLogFields): void {
++  try {
++    console.log(JSON.stringify({ code: fields.code, stage: fields.stage }));
++  } catch {
++    // Logging is best effort and cannot change the service result.
++  }
  }
-diff --git a/lib/experiment_observer.ts b/lib/experiment_observer.ts
-new file mode 100755
-index 0000000..1f3bc57
+--- /dev/null
++++ b/functions/observation_logging_test.ts
+@@ -0,0 +1,20 @@
++import { logSafe } from "./translate_reaction.ts";
++
++Deno.test("safe service logging contains serialization and sink failures", () => {
++  const fields = { code: "test", stage: "test" };
++  const savedLog = console.log;
++  const savedStringify = JSON.stringify;
++  try {
++    console.log = () => {
++      throw new Error("sink");
++    };
++    logSafe(fields);
++    JSON.stringify = (() => {
++      throw new Error("serialization");
++    }) as typeof JSON.stringify;
++    logSafe(fields);
++  } finally {
++    console.log = savedLog;
++    JSON.stringify = savedStringify;
++  }
++});
 --- /dev/null
 +++ b/lib/experiment_observer.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,70 @@
++import { observationElapsed, observationTime } from "./experiment_telemetry.ts";
 +import type { FetchLike } from "./deepl_client.ts";
 +import { resolveTriggerEmojiName } from "./trigger_emoji.ts";
 +
@@ -94,8 +154,8 @@ index 0000000..1f3bc57
 +export type SafeObservation = {
 +  kind: "fetch_invocation";
 +  mode: "record" | "monitor";
-+  observed_at_ms: number;
-+  observer_ms: number;
++  observed_at_ms: number | null;
++  observer_ms: number | null;
 +  accepted?: boolean;
 +};
 +
@@ -135,19 +195,19 @@ index 0000000..1f3bc57
 +): FetchLike {
 +  let balance: number | null = 1;
 +  return (input, init) => {
-+    const start = clock();
-+    let accepted: boolean | undefined;
-+    if (mode === "monitor") {
-+      balance = balance === null || balance === 0 ? null : balance - 1;
-+      accepted = balance !== null;
-+    }
-+    const end = clock();
 +    try {
++      const start = observationTime(clock);
++      let accepted: boolean | undefined;
++      if (mode === "monitor") {
++        balance = balance === null || balance === 0 ? null : balance - 1;
++        accepted = balance !== null;
++      }
++      const end = observationTime(clock);
 +      emit({
 +        kind: "fetch_invocation",
 +        mode,
 +        observed_at_ms: start,
-+        observer_ms: end - start,
++        observer_ms: observationElapsed(start, end),
 +        ...(mode === "monitor" ? { accepted } : {}),
 +      });
 +    } catch {
@@ -156,9 +216,6 @@ index 0000000..1f3bc57
 +    return fetchFn(input, init);
 +  };
 +}
-diff --git a/lib/experiment_observer_test.ts b/lib/experiment_observer_test.ts
-new file mode 100755
-index 0000000..f8380c4
 --- /dev/null
 +++ b/lib/experiment_observer_test.ts
 @@ -0,0 +1,83 @@
@@ -244,4 +301,403 @@ index 0000000..f8380c4
 +  );
 +  await fn("https://example.invalid");
 +  assert(called === 1);
++});
+--- /dev/null
++++ b/lib/experiment_telemetry.ts
+@@ -0,0 +1,94 @@
++import { DeepLHttpError, DeepLTimeoutError } from "./errors.ts";
++
++// Synchronous observation faults become missing values, never business failures.
++export function observationValue<T>(read: () => T): T | null {
++  try {
++    return read();
++  } catch {
++    return null;
++  }
++}
++export function observationTime(
++  clock: () => number = () => performance.now(),
++): number | null {
++  const value = observationValue(clock);
++  return typeof value === "number" && Number.isFinite(value) && value >= 0
++    ? value
++    : null;
++}
++export function observationElapsed(
++  start: number | null,
++  end: number | null,
++): number | null {
++  return start !== null && end !== null && end >= start ? end - start : null;
++}
++
++export function translationProbe(
++  translate: (text: string) => Promise<string>,
++  emit: (event: Record<string, unknown>) => void,
++  clock: () => number = () => performance.now(),
++) {
++  return async (text: string): Promise<string> => {
++    const start = observationTime(clock);
++    const chars = observationValue(() => Array.from(text).length);
++    let outcome = "success";
++    let httpStatus: number | null = null;
++    try {
++      return await translate(text);
++    } catch (error) {
++      outcome = "failure";
++      try {
++        outcome = error instanceof DeepLTimeoutError ? "timeout" : "failure";
++        if (error instanceof DeepLHttpError) httpStatus = error.status;
++      } catch {
++        // Classification must not replace even an exotic original rejection.
++        httpStatus = null;
++      }
++      throw error;
++    } finally {
++      try {
++        emit({
++          kind: "translation_result",
++          translation_ms: observationElapsed(start, observationTime(clock)),
++          submitted_codepoints: chars,
++          outcome,
++          http_status: httpStatus,
++          api_billed_characters: null,
++          usage_provenance: "unavailable",
++        });
++      } catch {
++        // Observation cannot change translation outcomes.
++      }
++    }
++  };
++}
++
++export function experimentTrace(
++  mode: "baseline" | "record" | "monitor",
++  trialId: string | undefined,
++  emit: (event: Record<string, unknown>) => void,
++  invocationId?: string,
++) {
++  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
++  const runId = observationValue(() => {
++    const value = invocationId ?? crypto.randomUUID();
++    return uuid.test(value) ? value : null;
++  });
++  let seq = 0;
++  let dropped = 0;
++  return (event: Record<string, unknown>) => {
++    try {
++      emit({
++        ...event,
++        schema_version: 2,
++        run_id: runId,
++        trial_id: trialId && uuid.test(trialId) ? trialId : null,
++        mode,
++        seq: seq++,
++        emit_failures: dropped,
++      });
++    } catch {
++      dropped++;
++    }
++  };
++}
+--- /dev/null
++++ b/lib/experiment_telemetry_test.ts
+@@ -0,0 +1,59 @@
++import { experimentTrace, translationProbe } from "./experiment_telemetry.ts";
++import { DeepLHttpError } from "./errors.ts";
++
++Deno.test("all modes correlate events without copying inputs or arbitrary trial IDs", async () => {
++  for (const mode of ["baseline", "record", "monitor"] as const) {
++    const events: Record<string, unknown>[] = [];
++    const emit = experimentTrace(mode, "invalid", (e) => events.push(e));
++    const input = String.fromCodePoint(0x1f642, 0x3042);
++    const probe = translationProbe(
++      (text) => Promise.resolve(text),
++      emit,
++      () => 1,
++    );
++    if (await probe(input) !== input) throw new Error("changed result");
++    if (events[0].submitted_codepoints !== 2 || events[0].trial_id !== null) {
++      throw new Error("invalid metadata");
++    }
++    if (JSON.stringify(events).includes(input)) throw new Error("body leak");
++    if (events[0].api_billed_characters !== null) {
++      throw new Error("invented usage");
++    }
++  }
++});
++Deno.test("HTTP 429 preserved and emit failure cannot mask the error", async () => {
++  const error = new DeepLHttpError(429);
++  const events: Record<string, unknown>[] = [];
++  const input = String.fromCodePoint(0x3042);
++  for (
++    const emit of [(e: Record<string, unknown>) => events.push(e), () => {
++      throw new Error("sink");
++    }]
++  ) {
++    try {
++      await translationProbe(() => Promise.reject(error), emit)(input);
++      throw new Error("expected error");
++    } catch (actual) {
++      if (actual !== error) throw new Error("masked error");
++    }
++  }
++  if (events[0].http_status !== 429) {
++    throw new Error("missing rate-limit status");
++  }
++});
++Deno.test("sequence detects local sink drop", () => {
++  const events: Record<string, unknown>[] = [];
++  let first = true;
++  const emit = experimentTrace("baseline", undefined, (e) => {
++    if (first) {
++      first = false;
++      throw new Error("sink");
++    }
++    events.push(e);
++  });
++  emit({ kind: "experiment_start" });
++  emit({ kind: "experiment_result" });
++  if (events[0].seq !== 1 || events[0].emit_failures !== 1) {
++    throw new Error("missing drop");
++  }
++});
+--- /dev/null
++++ b/lib/observation_fault_regression_test.ts
+@@ -0,0 +1,237 @@
++import {
++  experimentTrace,
++  observationElapsed,
++  observationTime,
++  translationProbe,
++} from "./experiment_telemetry.ts";
++import { experimentAllowed, observedFetch } from "./experiment_observer.ts";
++
++function assert(ok: boolean) {
++  if (!ok) throw new Error("audit assertion");
++}
++async function rejection(fn: () => unknown, expected: unknown) {
++  let caught = false;
++  try {
++    await fn();
++  } catch (actual) {
++    caught = true;
++    assert(actual === expected);
++  }
++  assert(caught);
++}
++Deno.test("REGRESSION initial clock failure preserves translation", async () => {
++  let calls = 0;
++  const fault = new Error("injected clock");
++  const events: Record<string, unknown>[] = [];
++  assert(
++    await translationProbe(
++      () => {
++        calls++;
++        return Promise.resolve("");
++      },
++      (e) => events.push(e),
++      () => {
++        throw fault;
++      },
++    )("") === "",
++  );
++  assert(calls === 1 && events[0].translation_ms === null);
++});
++Deno.test("REGRESSION character counting failure preserves translation", async () => {
++  let calls = 0;
++  const fault = new Error("injected count");
++  const saved = Array.from;
++  Array.from = (() => {
++    throw fault;
++  }) as typeof Array.from;
++  try {
++    const events: Record<string, unknown>[] = [];
++    assert(
++      await translationProbe(
++        () => {
++          calls++;
++          return Promise.resolve("");
++        },
++        (e) => events.push(e),
++        () => 1,
++      )("") === "",
++    );
++    assert(events[0].submitted_codepoints === null);
++  } finally {
++    Array.from = saved;
++  }
++  assert(calls === 1);
++});
++Deno.test("REGRESSION UUID failure emits missing identity and preserves translation", async () => {
++  const fault = new Error("injected uuid");
++  const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
++  Object.defineProperty(crypto, "randomUUID", {
++    configurable: true,
++    value: () => {
++      throw fault;
++    },
++  });
++  try {
++    const events: Record<string, unknown>[] = [];
++    const trace = experimentTrace("baseline", undefined, (e) => events.push(e));
++    let calls = 0;
++    assert(
++      await translationProbe(() => {
++        calls++;
++        return Promise.resolve("");
++      }, trace)("") === "",
++    );
++    assert(calls === 1 && events[0].run_id === null);
++  } finally {
++    if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
++    else Reflect.deleteProperty(crypto, "randomUUID");
++  }
++});
++Deno.test("REGRESSION observer clock faults preserve exact fetch promise and outcome", async () => {
++  for (const mode of ["record", "monitor"] as const) {
++    for (const failAt of [1, 2]) {
++      const fault = new Error("injected observer clock");
++      let ticks = 0;
++      let calls = 0;
++      const response = new Response();
++      const promise = Promise.resolve(response);
++      const events: Record<string, unknown>[] = [];
++      const fn = observedFetch(
++        () => {
++          calls++;
++          return promise;
++        },
++        mode,
++        () => {
++          if (++ticks === failAt) throw fault;
++          return ticks;
++        },
++        (e) => events.push(e),
++      );
++      assert(fn("https://example.invalid") === promise);
++      assert(await promise === response);
++      assert(calls === 1 && events[0].observer_ms === null);
++    }
++  }
++});
++Deno.test("REGRESSION classifier preserves unusual original rejection", async () => {
++  const fault = new Error("injected prototype trap");
++  const original = new Proxy({}, {
++    getPrototypeOf() {
++      throw fault;
++    },
++  });
++  await rejection(
++    () =>
++      translationProbe(() => Promise.reject(original), () => {}, () => 1)(""),
++    original,
++  );
++});
++Deno.test("AUDIT protected final clock and sink failures preserve normal success and original error", async () => {
++  for (const failClock of [true, false]) {
++    const original = new Error("original");
++    let ticks = 0;
++    const clock = () => {
++      if (++ticks > 1 && failClock) throw new Error("final clock");
++      return ticks;
++    };
++    const sink = () => {
++      throw new Error("sink");
++    };
++    assert(
++      await translationProbe(() => Promise.resolve(""), sink, clock)("") === "",
++    );
++    ticks = 0;
++    await rejection(
++      () => translationProbe(() => Promise.reject(original), sink, clock)(""),
++      original,
++    );
++  }
++});
++Deno.test("AUDIT event getter failure is contained and recorded by later emission", () => {
++  const events: Record<string, unknown>[] = [];
++  const trace = experimentTrace(
++    "baseline",
++    undefined,
++    (e) => events.push(e),
++    "00000000-0000-4000-8000-000000000001",
++  );
++  trace({
++    get kind() {
++      throw new Error("event getter");
++    },
++  });
++  trace({ kind: "experiment_result" });
++  assert(events.length === 1 && events[0].emit_failures === 1);
++});
++Deno.test("AUDIT invalid mode guard fails closed and invalid trial only removes correlation", () => {
++  assert(
++    !experimentAllowed("test", "test", {
++      EXPERIMENT_WORKSPACE_ID: "test",
++      EXPERIMENT_CHANNEL_ID: "test",
++      DEEPL_TRIGGER_EMOJI: "microscope",
++      EXPERIMENT_MODE: "invalid",
++    }),
++  );
++  const events: Record<string, unknown>[] = [];
++  experimentTrace(
++    "baseline",
++    "invalid",
++    (e) => events.push(e),
++    "00000000-0000-4000-8000-000000000001",
++  )({ kind: "experiment_result" });
++  assert(events[0].trial_id === null);
++});
++
++Deno.test("REGRESSION nonfinite and reversed clocks are missing", async () => {
++  for (const value of [NaN, Infinity, -1]) {
++    assert(observationTime(() => value) === null);
++  }
++  assert(observationElapsed(2, 1) === null);
++  assert(observationElapsed(null, 1) === null);
++  assert(observationElapsed(1, 1) === 0);
++  for (const original of [undefined, null, 0, Symbol("rejection")]) {
++    let calls = 0;
++    await rejection(() =>
++      translationProbe(() => {
++        calls++;
++        throw original;
++      }, () => {
++        throw new Error("sink");
++      }, () => {
++        throw new Error("clock");
++      })(""), original);
++    assert(calls === 1);
++  }
++});
++Deno.test("REGRESSION fetch preserves synchronous throws and rejection identities with failing observations", async () => {
++  const original = new Proxy({}, {
++    getPrototypeOf() {
++      throw new Error("trap");
++    },
++  });
++  for (const mode of ["record", "monitor"] as const) {
++    for (const synchronous of [true, false]) {
++      let calls = 0;
++      const rejected = Promise.reject(original);
++      // Attach a handler even when the synchronous branch does not return it.
++      rejected.catch(() => {});
++      const fn = observedFetch(
++        () => {
++          calls++;
++          if (synchronous) throw original;
++          return rejected;
++        },
++        mode,
++        () => {
++          throw new Error("clock");
++        },
++        () => {
++          throw new Error("sink");
++        },
++      );
++      await rejection(() => fn("https://example.invalid"), original);
++      assert(calls === 1);
++    }
++  }
 +});

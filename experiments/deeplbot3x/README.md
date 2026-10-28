@@ -10,4 +10,41 @@ After the user approved the experimental app, it was redeployed and the Free end
 
 The observer is per Function execution, with a capacity-one, zero-refill monitor. It reports extra fetches within that one execution but cannot enforce or monitor a global rate across multiple Functions. Its clock is local to an execution; timestamps from different executions cannot be assumed comparable. `observer_ms` excludes the cost of emitting the log and should not be interpreted as total instrumentation overhead. `elapsed_ms` covers the service call after the guard and is not the full Slack platform lifecycle. Event logs omit message text, credentials, and identifiers; without independent event correlation, they cannot establish completeness. The original client's requester attribution and usage audit behavior remain in the separate app; review the implications before use.
 
-Apply the patch in a fresh clone at the stated commit and run `deno task test`. In the prepared copy, 151 tests passed, including guard and observer tests; these are local mocked tests, not a deployed Slack evaluation. For the broader evaluation protocol, see `experiments/evaluation-plan.md`.
+The original preparation passed 151 local mocked tests. That original patch is retained as `experiment-initial.patch` for historical provenance; it has the observation exception defects described below and must not be applied on top of the current patch. The current preparation and offline validation supersede that local test result, not the historical deployed smoke evidence.
+
+
+## Current preparation: observation exception isolation
+
+The current `experiment.patch` applies directly to the exact base above. Do not stack it on the initial patch. It adds common trace correlation and translation measurements in all three modes, and isolates synchronous observation faults from translator/fetch execution. UUID, clock or character-count failures become missing values; error classification cannot replace an original rejection. Existing workspace/channel/mode/emoji guards remain fail-closed. The patch contains no local app identity, workspace IDs, authentication or environment files.
+
+The new code has only been tested locally. It has not been deployed and the earlier smoke results do not validate this candidate. Baseline now includes common UUID, timing, codepoint counting, exception protection and log emission overhead. It is not an uninstrumented control. An independent invocation denominator is still absent: observation completeness remains unknown.
+
+### Reproduce offline validation
+
+Use a disposable clean checkout of `nisizaki/deeplbot3` at the exact base. Supply an absolute path to this research checkout:
+
+```sh
+git apply --check "$RESEARCH/experiments/deeplbot3x/experiment.patch"
+git apply "$RESEARCH/experiments/deeplbot3x/experiment.patch"
+deno fmt --check
+deno lint
+deno test --cached-only --deny-net --deny-env --deny-run --deny-write --allow-read --permit-no-files
+cd "$RESEARCH/experiments/deeplbot3x"
+python3 -m unittest -v test_safe_log_filter.py
+```
+
+Deno 2.9.8 was used with an already populated dependency cache. A cold cache requires separately fetching the project's pinned dependencies before this offline command; tests must not call Slack or DeepL. Applying the patch does not link an app or authorize deployment. Never use the production app for this preparation.
+
+See `repair-report.md`, `validation.json` and `source-identity.json` for the exact source scope and test evidence. The public patch excludes local-only app naming/configuration, so its hash differs from the isolated runtime's 36-file identity.
+
+### Metadata collector
+
+`safe_log_filter.py` accepts bounded JSON lines (or a JSON wrapper with a message field), selects one non-secret trial UUID and mode, and outputs allowlisted metadata only. Do not save raw platform output; verify a platform log adapter separately before live use.
+
+```sh
+python3 safe_log_filter.py --trial-id "$TRIAL_UUID" --mode baseline --expected-invocations 1
+```
+
+Missing run identity causes line rejection. Missing timings are excluded from distributions. If no character measurement exists, the observed character sum is null, not zero; partial sums are not total API usage. The planned count is labelled `operator_plan`, not independent evidence of complete observation. Baseline fetch observations, actual retries and API-reported billed usage remain unknown where unavailable.
+
+The exact offline public-patch result is 165 Deno tests and 7 Python tests, all passing. See `deployment-smoke-plan-ja.md` for the proposed approval-gated deployment, abort and three-shot smoke procedure. `check_deepl_free_usage.py` is a manual private-terminal helper; it is not run by the test suite. Account-specific usage snapshots stay outside this repository.

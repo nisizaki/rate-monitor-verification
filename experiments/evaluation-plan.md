@@ -27,3 +27,16 @@ The existing client has no shared limiter, retries, grant events, or runtime obs
 Store exact run configuration, start/end time, source commit, test versions, exclusions, deviations, raw anonymous measurements and aggregation script. Record both successful and failed cases. Define expected operation counts before running. Avoid baseline drift by rotating or randomizing modes and reporting unpaired effects where pairing is unavailable. No significance or production overhead claim follows from the local preliminary run.
 
 The proof in `Permit_Bridge.thy` assumes `window_correspondence`; this experiment cannot turn the assumption into a theorem. Likewise test passes do not prove TypeScript refinement, observation completeness, or timing preservation for all executions.
+
+
+## Repaired experimental candidate (local preparation only)
+
+The current DeepLbot3x patch adds shared measurements to baseline as well as record and monitor. UUID creation, timing, Unicode codepoint counting, synchronous exception protection and common log emission all contribute baseline overhead. Compare modes with that definition; no uninstrumented-control claim is justified. The new candidate has not been deployed or used for live smoke trials.
+
+Observation faults must not suppress or retry translation/fetch, replace successful values or original rejection values, or fabricate measured zeroes. Local fault regressions cover synchronous faults; process termination, OOM, asynchronous sinks and delivery loss remain limitations. See deeplbot3x/repair-report.md.
+
+Before a separately authorized one-shot trial per mode, freeze the patch/source identity, runtime/configuration versions, synthetic input size, mode and non-secret trial UUID. Keep those trials separate from proposed full repetitions. Full repetitions require a prespecified budget, warmup policy, randomized/rotated mode order, matched workloads, concurrency and cold/warm policy, and failure/missingness rules.
+
+Completeness remains unknown without an independent denominator. Planned posts and sequence numbers cannot detect all entirely missing invocations or the last lost event. Report sample counts and missing values alongside timing percentiles. Submitted Unicode codepoints after placeholder processing are not API-reported billed characters. A partial observed character sum is not total consumption; zero valid measurements produce null. Usage/quota is independently checked through the official account interface.
+
+Deployment is a separate decision: inspect the complete app manifest/workflow impact and preserve existing triggers and grants. Standard Slack CLI deployment may update the app manifest/install state and affect monthly-report workflows as part of the bundle. No deployment, settings changes, new app/trigger/key or automatic rollback is authorized by this preparation. A manifest backup alone does not restore unknown old deployed source.

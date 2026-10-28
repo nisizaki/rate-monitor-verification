@@ -1,0 +1,16 @@
+{
+  "experimental_base": "b4eb35ba464ebde9e4fad89c387c68653cc76dac",
+  "initial_patch_sha256": "61c3999e7a273f86bfd2e3f50059e7d00e33378d80f6fbe8caa4166fed8ea6c8",
+  "experiment_patch_sha256": "63aca6729e5084d715194fea20cecaab7d393acf15fe67f3673d2d4d19c63ffb",
+  "patched_files_sha256": {
+    "functions/translate_reaction.ts": "435ce841ebec7e06bb3884fd7d96e3c09cc2635e6438b774cb161c761b6a752e",
+    "functions/observation_logging_test.ts": "8a1b3fde9f6ecfe25e628d3e0083f38f4cf38cbc1c32dbca4e4eb334790d759d",
+    "lib/experiment_observer.ts": "53d7d72487cad95a20818321fa80609d9944399b3fa1a90cbf9813fb81601456",
+    "lib/experiment_observer_test.ts": "817aa7a179d1fea090b206f74a6a801e5f5f96b2d985d053dec27ff40b26416b",
+    "lib/experiment_telemetry.ts": "b2dacba6e184689c0be57c46c5fe77b867ab25086ce6b4d8b03e84de7deeca77",
+    "lib/experiment_telemetry_test.ts": "b1a81fd62268c545e7cc524828d965b6ceba5f89bfffb58e8fabc142dca29d2b",
+    "lib/observation_fault_regression_test.ts": "f1dc9ea87a5ed999f175c73b31642d2e572f957b37823d7ab9a00300c80cd85f"
+  },
+  "tested_isolated_runtime_identity_sha256": "86c34b8e4e4d1c8e9adc9affee4fb5ca980b862d4f452987d40862c0e11a56da",
+  "identity_scope": "Public patch excludes local app identity and Slack association files. The isolated 36-file identity includes non-secret local runtime configuration and is historical provenance, not a hash of this public patch or any deployed artifact. Patched source bytes must match the listed hashes. Regression imports are relocated for a clean baseline checkout. Dependencies have no lockfile; transitive byte identity is unverified."
+}

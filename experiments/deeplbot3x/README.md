@@ -48,3 +48,5 @@ python3 safe_log_filter.py --trial-id "$TRIAL_UUID" --mode baseline --expected-i
 Missing run identity causes line rejection. Missing timings are excluded from distributions. If no character measurement exists, the observed character sum is null, not zero; partial sums are not total API usage. The planned count is labelled `operator_plan`, not independent evidence of complete observation. Baseline fetch observations, actual retries and API-reported billed usage remain unknown where unavailable.
 
 The exact offline public-patch result is 165 Deno tests and 7 Python tests, all passing. See `deployment-smoke-plan-ja.md` for the proposed approval-gated deployment, abort and three-shot smoke procedure. `check_deepl_free_usage.py` is a manual private-terminal helper; it is not run by the test suite. Account-specific usage snapshots stay outside this repository.
+
+See `stage1-preparation-ja.md` for the fixed candidate, durable-state design, review-gated stages and stop thresholds. Smoke (3), pilot (up to 30), and main (360) are separate datasets: 393 total, not 390 when smoke is included. No runner, scheduler, deployment or live trial was started by this preparation.

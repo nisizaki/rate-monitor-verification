@@ -7,3 +7,5 @@ session Rate_Monitor_Verification = HOL +
     Retry_Bot
     Instrumented_Retry
     Permit_Delay
+    Permit_Operational
+    Permit_Bridge

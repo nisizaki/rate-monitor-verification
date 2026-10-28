@@ -1,0 +1,247 @@
+diff --git a/functions/translate_reaction.ts b/functions/translate_reaction.ts
+index 99b3279..dd9ce43 100644
+--- a/functions/translate_reaction.ts
++++ b/functions/translate_reaction.ts
+@@ -1,6 +1,11 @@
+ import { DefineFunction, Schema, SlackFunction } from "deno-slack-sdk/mod.ts";
+ import { translateJapaneseToEnglish } from "../lib/deepl_client.ts";
+ import { MissingDeepLAuthKeyError } from "../lib/errors.ts";
++import {
++  experimentAllowed,
++  experimentMode,
++  observedFetch,
++} from "../lib/experiment_observer.ts";
+ import { createSlackGateway } from "../lib/slack_gateway.ts";
+ import { handleTranslateReaction } from "../lib/translate_reaction_service.ts";
+ import { resolveTriggerEmojiName } from "../lib/trigger_emoji.ts";
+@@ -11,6 +16,9 @@ export interface SlackFunctionEnv {
+   DEEPL_GLOSSARY_ID?: string;
+   DEEPL_API_URL?: string;
+   DEEPL_TRIGGER_EMOJI?: string;
++  EXPERIMENT_CHANNEL_ID?: string;
++  EXPERIMENT_WORKSPACE_ID?: string;
++  EXPERIMENT_MODE?: string;
+ }
+ 
+ export type SlackFunctionTranslator = typeof translateJapaneseToEnglish;
+@@ -44,6 +52,12 @@ export const TranslateReactionFunctionDefinition = DefineFunction({
+ export default SlackFunction(
+   TranslateReactionFunctionDefinition,
+   async ({ inputs, client, env }) => {
++    // Fail closed: an unset or unexpected channel/mode cannot start translation.
++    if (!experimentAllowed(inputs.workspace_id, inputs.channel_id, env)) {
++      return { outputs: { skipped: true, result_code: "experiment_filtered" } };
++    }
++    const start = performance.now();
++    const mode = experimentMode(env.EXPERIMENT_MODE)!;
+     const triggerEmoji = createTriggerEmojiName(env);
+     const result = await handleTranslateReaction({
+       reaction: inputs.reaction,
+@@ -59,6 +73,17 @@ export default SlackFunction(
+       log: logSafe,
+     });
+ 
++    try {
++      console.log(JSON.stringify({
++        kind: "experiment_result",
++        mode,
++        elapsed_ms: performance.now() - start,
++        result_code: result.code,
++      }));
++    } catch {
++      // The experimental observer is passive.
++    }
++
+     return {
+       outputs: {
+         skipped: result.code !== "translated" &&
+@@ -79,11 +104,18 @@ export function createDeepLTranslator(
+       throw new MissingDeepLAuthKeyError();
+     }
+ 
++    const mode = experimentMode(env.EXPERIMENT_MODE);
++    const fetchFn = mode === "record" || mode === "monitor"
++      ? observedFetch(fetch, mode, () => performance.now(), (entry) => {
++        console.log(JSON.stringify(entry));
++      })
++      : undefined;
+     return translator({
+       authKey: env.DEEPL_AUTH_KEY,
+       glossaryId: env.DEEPL_GLOSSARY_ID,
+       apiUrl: env.DEEPL_API_URL,
+       text,
++      ...(fetchFn ? { fetchFn } : {}),
+     });
+   };
+ }
+@@ -93,5 +125,5 @@ export function createTriggerEmojiName(env: SlackFunctionEnv): string {
+ }
+ 
+ function logSafe(fields: SafeLogFields): void {
+-  console.log(JSON.stringify(fields));
++  console.log(JSON.stringify({ code: fields.code, stage: fields.stage }));
+ }
+diff --git a/lib/experiment_observer.ts b/lib/experiment_observer.ts
+new file mode 100755
+index 0000000..1f3bc57
+--- /dev/null
++++ b/lib/experiment_observer.ts
+@@ -0,0 +1,69 @@
++import type { FetchLike } from "./deepl_client.ts";
++import { resolveTriggerEmojiName } from "./trigger_emoji.ts";
++
++export type ExperimentMode = "baseline" | "record" | "monitor";
++export type SafeObservation = {
++  kind: "fetch_invocation";
++  mode: "record" | "monitor";
++  observed_at_ms: number;
++  observer_ms: number;
++  accepted?: boolean;
++};
++
++export function experimentMode(
++  value: string | undefined,
++): ExperimentMode | null {
++  return value === "baseline" || value === "record" || value === "monitor"
++    ? value
++    : null;
++}
++
++export function experimentAllowed(
++  workspace: string | undefined,
++  channel: string,
++  env: {
++    EXPERIMENT_WORKSPACE_ID?: string;
++    EXPERIMENT_CHANNEL_ID?: string;
++    EXPERIMENT_MODE?: string;
++    DEEPL_TRIGGER_EMOJI?: string;
++  },
++): boolean {
++  return !!env.EXPERIMENT_WORKSPACE_ID &&
++    workspace === env.EXPERIMENT_WORKSPACE_ID &&
++    !!env.EXPERIMENT_CHANNEL_ID && channel === env.EXPERIMENT_CHANNEL_ID &&
++    !!env.DEEPL_TRIGGER_EMOJI &&
++    resolveTriggerEmojiName(env.DEEPL_TRIGGER_EMOJI) !== "deepl-icon" &&
++    experimentMode(env.EXPERIMENT_MODE) !== null;
++}
++
++// Per-Function only: this does not share state across Slack invocations.
++// A unit-capacity, zero-refill monitor makes additional calls visible.
++export function observedFetch(
++  fetchFn: FetchLike,
++  mode: "record" | "monitor",
++  clock: () => number,
++  emit: (entry: SafeObservation) => void,
++): FetchLike {
++  let balance: number | null = 1;
++  return (input, init) => {
++    const start = clock();
++    let accepted: boolean | undefined;
++    if (mode === "monitor") {
++      balance = balance === null || balance === 0 ? null : balance - 1;
++      accepted = balance !== null;
++    }
++    const end = clock();
++    try {
++      emit({
++        kind: "fetch_invocation",
++        mode,
++        observed_at_ms: start,
++        observer_ms: end - start,
++        ...(mode === "monitor" ? { accepted } : {}),
++      });
++    } catch {
++      // Instrumentation must not prevent the original fetch invocation.
++    }
++    return fetchFn(input, init);
++  };
++}
+diff --git a/lib/experiment_observer_test.ts b/lib/experiment_observer_test.ts
+new file mode 100755
+index 0000000..f8380c4
+--- /dev/null
++++ b/lib/experiment_observer_test.ts
+@@ -0,0 +1,83 @@
++import {
++  experimentAllowed,
++  experimentMode,
++  observedFetch,
++} from "./experiment_observer.ts";
++import type { SafeObservation } from "./experiment_observer.ts";
++
++function assert(value: boolean): void {
++  if (!value) throw new Error("assertion failed");
++}
++
++Deno.test("experiment modes must be explicit", () => {
++  assert(experimentMode(undefined) === null);
++  assert(experimentMode("unknown") === null);
++  assert(experimentMode("baseline") === "baseline");
++});
++
++Deno.test("only the configured workspace, channel, mode and separate emoji are admitted", () => {
++  const env = {
++    EXPERIMENT_WORKSPACE_ID: "test-workspace",
++    EXPERIMENT_CHANNEL_ID: "test-channel",
++    EXPERIMENT_MODE: "record",
++    DEEPL_TRIGGER_EMOJI: "microscope",
++  };
++  assert(experimentAllowed("test-workspace", "test-channel", env));
++  assert(!experimentAllowed("wrong", "test-channel", env));
++  assert(!experimentAllowed("test-workspace", "wrong", env));
++  assert(
++    !experimentAllowed("test-workspace", "test-channel", {
++      ...env,
++      DEEPL_TRIGGER_EMOJI: " deepl-icon ",
++    }),
++  );
++  assert(
++    !experimentAllowed("test-workspace", "test-channel", {
++      ...env,
++      DEEPL_TRIGGER_EMOJI: "bad!",
++    }),
++  );
++  assert(
++    !experimentAllowed("test-workspace", "test-channel", {
++      ...env,
++      EXPERIMENT_MODE: "",
++    }),
++  );
++});
++
++Deno.test("monitor detects a second invocation without blocking it", async () => {
++  const observations: SafeObservation[] = [];
++  let called = 0;
++  let now = 0;
++  const fn = observedFetch(
++    () => {
++      called++;
++      return Promise.resolve(new Response("ok"));
++    },
++    "monitor",
++    () => now++,
++    (item) => observations.push(item),
++  );
++  assert((await fn("https://example.invalid")).status === 200);
++  assert((await fn("https://example.invalid")).status === 200);
++  assert(called === 2);
++  assert(observations[0].accepted === true);
++  assert(observations[1].accepted === false);
++});
++
++Deno.test("recording errors do not suppress a fetch", async () => {
++  let called = 0;
++  const fn = observedFetch(
++    () => {
++      called++;
++      return Promise.resolve(new Response("ok"));
++    },
++    "record",
++    () => 0,
++    () => {
++      throw new Error("recording failed");
++    },
++  );
++  await fn("https://example.invalid");
++  assert(called === 1);
++});

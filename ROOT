@@ -6,3 +6,4 @@ session Rate_Monitor_Verification = HOL +
     Concurrent_Bot
     Retry_Bot
     Instrumented_Retry
+    Permit_Delay

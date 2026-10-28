@@ -23,12 +23,15 @@ are mathematical abstractions; they do not verify the TypeScript implementation.
 * `Instrumented_Retry.thy` attaches a passive monitor to the retry model and
   proves trace preservation and monitor correspondence. Its observation and
   timing assumptions are documented in `docs/instrumentation-model.md`.
+* `Permit_Delay.thy` relates permit and fetch timestamps and proves a
+  delay-adjusted rate bound and a counterexample to the unchanged bound; see
+  `docs/permit-delay.md` for assumptions and remaining connections.
 
 Time and refill amounts are natural numbers. The monitored send denotes an
 abstract fetch invocation, not a network arrival. Dynamic execution creation,
 observation completeness, timed instrumentation, and shared-state implementation
-are not yet formalized. Retry_Bot is a separate model, not yet a refinement of
-Concurrent_Bot or of the TypeScript implementation.
+are not yet formalized. Retry_Bot and Permit_Delay are separate models, not yet
+connected by a refinement proof to each other or to the TypeScript code.
 
 Run `isabelle build -D .` with Isabelle/HOL, or check the theories using the
 isabelle-checker service. No network calls to Slack or DeepL are required.

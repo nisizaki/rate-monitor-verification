@@ -9,3 +9,4 @@ session Rate_Monitor_Verification = HOL +
     Permit_Delay
     Permit_Operational
     Permit_Bridge
+    Correspondence_Examples

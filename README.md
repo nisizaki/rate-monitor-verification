@@ -26,6 +26,11 @@ are mathematical abstractions; they do not verify the TypeScript implementation.
 * `Permit_Delay.thy` relates permit and fetch timestamps and proves a
   delay-adjusted rate bound and a counterexample to the unchanged bound; see
   `docs/permit-delay.md` for assumptions and remaining connections.
+* `Permit_Operational.thy` separates granting, fetching, and cancelling permits;
+  `Permit_Bridge.thy` gives a conditional connection to the concurrent model.
+  See `docs/permit-bridge.md` for the still-unproved correspondence assumptions.
+* `Correspondence_Examples.thy` verifies three concrete monitor results used in
+  the DeepLbot3 Deno experiments, described in `experiments/README.md`.
 
 Time and refill amounts are natural numbers. The monitored send denotes an
 abstract fetch invocation, not a network arrival. Dynamic execution creation,

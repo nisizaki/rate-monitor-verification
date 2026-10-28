@@ -20,6 +20,9 @@ are mathematical abstractions; they do not verify the TypeScript implementation.
 * `Retry_Bot.thy` models per-job attempts, retry eligibility, deadlines, quota
   and timeout events against a shared bucket. `docs/retry-model.md` describes
   the formalized properties and the boundaries of this separate model.
+* `Instrumented_Retry.thy` attaches a passive monitor to the retry model and
+  proves trace preservation and monitor correspondence. Its observation and
+  timing assumptions are documented in `docs/instrumentation-model.md`.
 
 Time and refill amounts are natural numbers. The monitored send denotes an
 abstract fetch invocation, not a network arrival. Dynamic execution creation,

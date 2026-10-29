@@ -1,0 +1,121 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[margin=15mm,columnsep=7mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,booktabs,microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newcommand{\send}{\mathsf{Send}}
+\newcommand{\other}{\mathsf{Other}}
+\newcommand{\tick}{\mathsf{Tick}}
+\title{Formalizing Passive Instrumentation for Rate-Limited API Clients: An Isabelle/HOL Case Study}
+\author{Author information to be supplied}
+\date{Draft --- experimental results pending}
+\begin{document}
+\maketitle
+\begin{abstract}
+API clients that run concurrently may need to control their aggregate request rate. Instrumentation can provide evidence about their behavior, but the monitor itself may change control flow or timing, and incomplete observations can invalidate conclusions. We develop an Isabelle/HOL case study motivated by a Slack translation application using the DeepL API. A discrete token-bucket transition system and a passive trace monitor are related by machine-checked theorems. Separate models describe interleaved clients, bounded retries, and the delay between a permit and a request. At the abstract level, observer erasure preserves retry traces and an initialized monitor agrees with the modeled bucket. A conditional bridge gives a delay-adjusted request bound, explicitly assuming a correspondence between timestamp windows and execution segments. A separate experimental application implements three observation modes; its fault isolation is checked by local tests, not by a proof of TypeScript refinement. We specify a provisional evaluation using Slack and DeepL, while leaving empirical results for subsequent work. The proposed rate policy is a research assumption, not a claim about DeepL's internal rate limits.
+\end{abstract}
+\noindent\textbf{Keywords:} Isabelle/HOL; runtime verification; token bucket; API clients; instrumentation; Slack.
+
+\section{Introduction}
+Modern applications often invoke remote APIs from independently scheduled tasks. A policy such as a token bucket can limit their collective request rate, but an implementation must also deal with retries, timing, and potentially incomplete records. An observer that records calls is itself software: a clock, identifier generator, or log sink can fail; adding measurement can change execution time. Thus, a model of the rate policy alone does not establish that an instrumented application has the same behavior as its uninstrumented counterpart.
+
+We study this distinction using a Slack translation bot based on DeepLbot3. A reaction starts a workflow that calls the DeepL translation API and posts a reply. We use a separate experimental copy, DeepLbot3x, rather than modifying the existing bot. The client invokes \texttt{fetch}; our abstract request event represents that invocation, not arrival at the remote server. The policies and parameters in our models are chosen for the study. DeepL documents usage limits and service behavior~\cite{deepllimits}, but we do not infer an undocumented provider-side request-rate policy.
+
+Our contributions are: (1) finite transition systems and Isabelle/HOL proofs for a rate bucket, interleaving, retries, and passive observation; (2) an explicitly conditional connection between shared-bucket execution and a bound on delayed fetches; (3) an implementation mapping and fault-oriented tests for a separate experimental bot; and (4) a provisional protocol for evaluating the mapping and measurement overhead in a live environment. No theorem establishes that the TypeScript implementation refines the formal models, that Slack logs are complete, or that the proposed distributed rate policy is enforced by the deployed application.
+
+\section{Background and Related Work}
+Network calculus studies traffic constraints and deterministic bounds~\cite{network,regulators}. Our token bucket follows this line of reasoning but is a discrete operational model used as a policy assumption. We prove equivalence of the monitor to that operational model, not equivalence to an independently formulated arrival-curve specification.
+
+Runtime verification analyzes observations of executions against a specification~\cite{runtime}. Our focus is the relationship between an abstract passive observer and the observed transition system, and the conditions under which implementation observations might be interpreted using that model. We do not equate a missing record with an event that did not occur.
+
+Linearizability provides a framework for reasoning about concurrent operations as if they occur atomically in an appropriate sequential order~\cite{linear}. Our concurrent model assumes atomic access to a shared bucket; it neither implements nor establishes linearizability of a distributed limiter. Work on verified timed-automata model checking~\cite{timed} motivates attention to timing assumptions, while our results use hand-defined discrete-time transition systems rather than a timed-automata model checker. Isabelle/HOL~\cite{isabelle} supplies the proof environment. Our contribution is an application-specific integration and explicit accounting of assumptions, rather than a new general traffic-regulation or runtime-verification algorithm.
+
+\section{System and Modeling Boundary}
+The original bot is a TypeScript application built with Slack's Deno SDK. A reaction triggers a workflow, which obtains message context, invokes a translation client, posts a reply, and performs subsequent bookkeeping. Slack custom functions execute application-defined workflow steps~\cite{slackfunctions}. The examined client issues a single fetch per translation attempt; the shared limiter and retry protocol below are prospective models, not existing bot features.
+
+We distinguish four levels: (i) abstract transition systems; (ii) an observation function mapping modeled events to a token-bucket trace; (iii) a handwritten TypeScript observer at the fetch boundary; and (iv) Slack's delivery of log records. The formal theorems apply to levels (i)--(ii). Unit tests provide finite evidence about (iii). Neither the tests nor the proofs establish completeness at (iv). A successful fetch observation describes a local invocation, not a server-side receipt, completion, or billing event.
+
+\section{Token Bucket and Runtime Monitor}
+Let capacity $B$, refill rate $r$, balance $b$ and time increments be natural numbers. Given $b\leq B$, a time event $\tick(d)$ updates the balance to $\min(B,b+rd)$; a send event $\send$ is enabled only when $b>0$ and decrements the balance; $\other$ leaves it unchanged. Let $S(E)$ count sends in a finite event list $E$ and $T(E)$ sum its time increments. Write $b\xrightarrow{E}b'$ for a valid run.
+
+\begin{lemma}[Accounting]\label{lem:account}
+If $b\xrightarrow{E}b'$, then $S(E)+b'\leq b+rT(E)$.
+\end{lemma}
+\begin{proof}[Proof idea]
+Induction on $E$. A send increments $S$ and decrements the balance. A time event increases balance by at most $rd$. Other events leave both quantities unchanged.
+\end{proof}
+\begin{theorem}[Finite-run bound]\label{thm:bucket}
+If $b\leq B$ and $b\xrightarrow{E}b'$, then $S(E)\leq B+rT(E)$.
+\end{theorem}
+\begin{proof}[Proof idea]
+Apply Lemma~\ref{lem:account} and nonnegativity of $b'$.
+\end{proof}
+The theory \texttt{Rate\_Bucket.thy} formalizes these results. A monitor in \texttt{Rate\_Monitor.thy} maintains either a balance $\mathsf{Some}(b)$ or a permanent rejected state $\mathsf{None}$. Its update follows the same transitions and rejects a send at zero balance.
+\begin{theorem}[Operational monitor correspondence]\label{thm:monitor}
+For any finite $E$, $b\xrightarrow{E}b'$ if and only if the monitor started at $\mathsf{Some}(b)$ returns $\mathsf{Some}(b')$ after $E$.
+\end{theorem}
+Thus, an accepted trace beginning with $b\leq B$ satisfies Theorem~\ref{thm:bucket}. This conclusion concerns the \emph{observed} trace; it says nothing about omitted events.
+
+\section{Concurrency, Retries, and Passive Observation}
+\subsection{Interleaved clients}
+In \texttt{Concurrent\_Bot.thy}, a total mapping from execution identifiers to phases represents potentially many clients. Local actions interleave under a shared token balance. A request action atomically consumes a token at the abstract boundary. The projection theorem maps a concurrent run to a valid bucket run, so Theorem~\ref{thm:bucket} bounds the aggregate number of modeled sends. The model includes neither dynamic creation nor a concrete shared-state implementation.
+
+The distinction between local and global state is material. With two independent capacity-one buckets, zero refill, and no time advance, each client can send once: the aggregate is two even though a single shared bucket would permit one. The checked counterexample demonstrates why per-client checks alone do not establish a global rate bound.
+
+\subsection{Retries and deadlines}
+\texttt{Retry\_Bot.thy} separately models job states, attempt counts, retry eligibility, and deadlines against a shared bucket. A dispatch requires an eligible waiting job, an available token, fewer than $K$ attempts, and a time strictly before its deadline. A rate-limited response schedules the next eligible time using the maximum of two modeled delays. Quota, timeout, and success finish an active job; expiration finishes a waiting job. Proved properties include the attempt bound, dispatch conditions, and absorption of finished states. Timeout denotes a client-side observation and does not establish cancellation or absence of remote billing. Fair scheduling, eventual progress, and successful translation are not proved. This model has not been shown to refine the concurrent bot model.
+
+\subsection{Erasure and correspondence}
+\texttt{Instrumented\_Retry.thy} extends retry runs with a monitor state. Each retry event is projected to a bucket event, and the observer updates without changing the underlying retry transition. If $R(s,E,s')$ denotes a retry run, $O(s,m,E,s',m')$ its observed counterpart, and $M$ the monitor, the checked \texttt{observational\_correspondence} theorem states
+\begin{equation}\label{eq:erase}
+ O(s,m,E,s',m')\iff R(s,E,s')\land m'=M(m,\pi(E)).
+\end{equation}
+The observer may be erased without changing $E$ or the final retry state; every retry run also admits an observed run. Even a rejected monitor does not block the model. If initialized to the abstract bucket balance, the monitor's final balance agrees with the bucket. Exact event delivery, one abstract timeline, and zero-time, exception-free observer steps hold by construction. Equation~\eqref{eq:erase} is not a theorem about TypeScript execution or physical timing.
+
+\section{Permit-to-Fetch Delay}
+Suppose each fetch has a unique corresponding grant identifier, and no grant is used more than once. Let each grant occur at time $g$ and its fetch at $f$, with $g\le f\le g+D$. Assume the grant count on each half-open interval $[s,t)$ is bounded by $B+r(t-s)$. Unused grants are permitted.
+\begin{theorem}[Delay-adjusted bound]\label{thm:delay}
+For every $s\leq t$, the number of fetches in $[s,t)$ is at most $B+r((t-s)+D)$.
+\end{theorem}
+\begin{proof}[Proof idea]
+Each such fetch maps injectively to a grant in $[\max(0,s-D),t)$. Apply the grant bound and bound the width of this interval by $(t-s)+D$.
+\end{proof}
+The checked \texttt{Permit\_Delay.thy} also constructs a counterexample to the unchanged bound: with $B=r=1$, grants at times 0, 1, and 2 can all be fetched at time 2 with $D=2$. Their fetches violate the original bound over $[2,3)$. Therefore a bound at the grant point cannot automatically be read as the same bound at a later fetch point.
+
+\texttt{Permit\_Operational.thy} models grant, fetch, and cancellation separately, including unique identifiers and the delay constraint as a fetch guard. Its invariants do not establish that a grant is eventually used or that a real scheduler meets $D$. \texttt{Permit\_Bridge.thy} proves a bound for any contiguous segment of a concurrent run and connects it to the delay theorem under \texttt{window\_correspondence}: each grant-time window must correspond to a contiguous execution segment with matching grant count and bounded elapsed time. This assumption is not derived from the transition systems. The separate runs must also be interpreted as representing the same execution. Deriving the correspondence and connecting the retry and permit models are open problems.
+
+\section{Implementation Mapping and Fault Isolation}
+The experimental patch is based on a fixed DeepLbot3 revision~\cite{repository}. It wraps the injected fetch function, records local monotonic timing and metadata, and optionally runs a capacity-one, zero-refill observer local to one function execution. The monitor is passive: it does not suppress calls. This concrete observer cannot establish an aggregate bound across separate Slack Functions, and its per-execution clock origin cannot be assumed comparable across instances. There is no implemented grant operation corresponding to the permit theories.
+
+The three experimental modes share measurement code. Baseline includes identifier generation, time reads, character counting, and common log emission; record adds a fetch observation; monitor adds the local monitor decision. Therefore a comparison against baseline estimates the difference relative to a commonly instrumented control, not the overhead of all instrumentation versus an uninstrumented program. Observer computation time excludes log emission and is not the total logging overhead.
+
+Fault injection exposed possible behavior changes when clocks, identifier generation, character counting, log serialization, or error classification failed. The revised candidate guards synchronous observation operations; missing values are recorded as missing rather than invented as zero. Tests cover selected clock and sink failures, unusual rejection values, and propagation of the original fetch result or error. These are tests of selected cases, not a proof for every execution. Process termination, memory exhaustion, asynchronous log failure, and delivery loss remain outside the demonstrated scope. The research repository records offline patch validation and candidate provenance~\cite{repository}.
+
+\section{Experimental Method and Provisional Status}\label{sec:experiment}
+\textbf{Provisional draft:} the empirical study is in progress. The protocol and figures below are planned values, not reported completed results. Earlier smoke tests of a previous experimental patch produced one successful translation per mode, on different inputs; those observations do not validate the revised candidate or support a quantitative comparison.
+
+\subsection{Research questions and setup}
+We plan to examine (RQ1) successful execution and failure behavior across the three modes, (RQ2) the ability to associate recorded events with trial identifiers, and (RQ3) differences in measured processing time. A separately installed experimental Slack app, a designated test channel, synthetic Japanese text, and the DeepL API Free endpoint provide the live setting. The source revision, patch identity, SDK versions, runtime, configuration, date, and deviations must be recorded. Credentials, input and translated text, and identifying workspace or user data are excluded from published measurements.
+
+Before the main study, one smoke trial per mode checks integration and log extraction. Up to 30 pilot trials are proposed to determine a feasible interval, configuration propagation, log collection, and recovery behavior. The current main-study candidate uses 12 sessions over approximately three days, with 10 trials per mode per session: 360 main trials. Mode orders are counterbalanced across sessions; the same synthetic input set is used in each mode. Together with three smoke trials and 30 pilot trials, this plan totals at most 393 trials before reruns. A 15-second start interval is provisional and requires pilot validation. Environment-based mode and trial identifiers require propagation checks; if runs overlap or configuration cannot be associated reliably, the design must be revised before the main study.
+
+\subsection{Measurements and analysis plan}
+Record planned and observed trials, mode, anonymous identifiers, configuration, start/end metadata, outcome, errors, missingness, and available function, translation, and observer timings. Independently track account-level usage where possible; submitted code points are not asserted to equal billed usage. A planned-trial ledger and sequence numbers can reveal some gaps but cannot prove that every fetch invocation was observed or that the last event was delivered. Missing measurements remain null, and a completely lost execution is not counted as a successful observation.
+
+Report sample sizes, successes, failures and missing records by mode, together with latency distributions and session-level variation. Comparisons use matched inputs and account for ordering and session clustering; analysis of high percentiles must acknowledge limited sample size. Function-level elapsed time is not necessarily end-to-end Slack latency. Selected tests of exception isolation do not establish semantic transparency in all environments. Pilot and smoke results must remain separate from the main dataset. Stop conditions, retries, reruns and exclusions are to be specified and recorded before the main study.
+
+\subsection{Results placeholder}
+\emph{To be completed after execution and validation of the protocol.} No numerical live performance, observation coverage, statistical significance, or global concurrency claim is made in this draft.
+
+\section{Limitations and Future Work}
+The abstract monitor corresponds to the bucket semantics from which it was constructed. The formal development does not verify an independent specification, distributed atomicity, implementation refinement, physical timing preservation, or event delivery. The delay bridge relies on an unproved window correspondence; retry and permit models are not unified. The experimental observer is per invocation, and the client lacks a shared rate limiter and retry logic. Empirical tests can reveal implementation defects and characterize tested settings, but cannot prove universal properties or infer an unknown provider policy. Future work should derive the bridge from a common timestamped trace, specify loss-aware observation, and prove an implementation correspondence for an actual shared limiter.
+
+\section{Conclusion}
+This draft presents a formal and experimental approach to passive observation of rate-limited API clients. The Isabelle/HOL results expose what follows from a shared abstract bucket, exact event delivery, and explicit delay assumptions. The experimental design examines a concrete implementation while keeping missing logs, observation overhead, and unproved connections visible. Live evaluation and its interpretation remain to be completed.
+
+\small
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
